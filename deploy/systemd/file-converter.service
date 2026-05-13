@@ -1,0 +1,22 @@
+[Unit]
+Description=File Converter Web App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fileconv
+Group=fileconv
+WorkingDirectory=/srv/file-converter
+EnvironmentFile=/etc/file-converter.env
+ExecStart=/srv/file-converter/bin/file-converter
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/file-converter/data
+
+[Install]
+WantedBy=multi-user.target
