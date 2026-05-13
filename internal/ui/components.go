@@ -5,12 +5,14 @@ import (
 	"context"
 	"html/template"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/a-h/templ"
 	"github.com/alexanderzull/file-converter/internal/auth"
 	"github.com/alexanderzull/file-converter/internal/db"
+	"github.com/alexanderzull/file-converter/internal/quota"
 )
 
 type Flash struct {
@@ -44,6 +46,7 @@ type dashboardView struct {
 	CurrentUser *auth.User
 	Jobs        []db.ConversionJob
 	MaxUploadMB int64
+	Quota       quota.Summary
 }
 
 type callbackView struct {
@@ -76,6 +79,12 @@ var templates = template.Must(template.New("base").Funcs(template.FuncMap{
 			return "status status-queued"
 		}
 	},
+	"statusText": func(status string) string {
+		if status == "" {
+			return "Unknown"
+		}
+		return strings.ToUpper(status[:1]) + strings.ToLower(status[1:])
+	},
 	"flashClass": func(kind string) string {
 		switch strings.ToLower(kind) {
 		case "error":
@@ -85,6 +94,13 @@ var templates = template.Must(template.New("base").Funcs(template.FuncMap{
 		default:
 			return "flash"
 		}
+	},
+	"downloadPath": func(jobID string) string {
+		return "/app/conversions/" + jobID + "/download"
+	},
+	"fileStem": func(name string) string {
+		base := filepath.Base(name)
+		return strings.TrimSuffix(base, filepath.Ext(base))
 	},
 }).Parse(baseTemplate + landingTemplate + loginTemplate + registerTemplate + forgotTemplate + resetTemplate + callbackTemplate + dashboardTemplate + jobsTemplate))
 
@@ -129,7 +145,7 @@ func ResetPassword(appName string, currentUser *auth.User, csrfToken string, csr
 	}, resetView{Flash: flash, CSRFField: csrfField, HasSession: hasSession})
 }
 
-func Dashboard(appName string, currentUser *auth.User, csrfToken string, csrfField template.HTML, flash *Flash, jobs []db.ConversionJob, maxUploadMB int64) templ.Component {
+func Dashboard(appName string, currentUser *auth.User, csrfToken string, csrfField template.HTML, flash *Flash, jobs []db.ConversionJob, maxUploadMB int64, usage quota.Summary) templ.Component {
 	return renderPage("dashboard", layoutData{
 		Title:       "Dashboard",
 		AppName:     appName,
@@ -141,13 +157,18 @@ func Dashboard(appName string, currentUser *auth.User, csrfToken string, csrfFie
 		CurrentUser: currentUser,
 		Jobs:        jobs,
 		MaxUploadMB: maxUploadMB,
+		Quota:       usage,
 	})
 }
 
-func JobsPanel(jobs []db.ConversionJob) templ.Component {
+func JobsPanel(jobs []db.ConversionJob, usage quota.Summary) templ.Component {
 	return renderFragment("jobs_panel", struct {
-		Jobs []db.ConversionJob
-	}{Jobs: jobs})
+		Jobs  []db.ConversionJob
+		Quota quota.Summary
+	}{
+		Jobs:  jobs,
+		Quota: usage,
+	})
 }
 
 func Callback(appName, csrfToken, heading, message, redirectTo string) templ.Component {
@@ -471,27 +492,53 @@ const callbackTemplate = `
 const dashboardTemplate = `
 {{define "dashboard"}}
 <section class="dashboard-grid">
-	<div class="panel">
-		<p class="eyebrow">Upload and queue</p>
-		<h1>Converter dashboard</h1>
+	<div class="panel convert-panel">
+		<div class="panel-header">
+			<div>
+				<p class="eyebrow">Convert workspace</p>
+				<h1>Converter dashboard</h1>
+			</div>
+			<div class="quota-chip{{if .Quota.Exhausted}} quota-chip-danger{{end}}">
+				<span class="quota-chip-label">Sisa hari ini</span>
+				<strong>{{.Quota.Remaining}} / {{.Quota.Limit}}</strong>
+			</div>
+		</div>
+		<p class="lede compact-lede">Upload file PDF atau EPUB, pilih output yang dibutuhkan, lalu pantau proses dan unduh hasilnya dari panel riwayat.</p>
 		{{if .Flash}}<p class="{{flashClass .Flash.Kind}}">{{.Flash.Message}}</p>{{end}}
-		<form method="post" action="/app/conversions" enctype="multipart/form-data" class="stack-form">
+		<div class="quota-summary{{if .Quota.Exhausted}} quota-summary-danger{{end}}">
+			<div>
+				<p class="quota-label">Quota harian</p>
+				<h2>{{.Quota.CompletedCount}} selesai, {{.Quota.ReservedCount}} sedang dipakai</h2>
+			</div>
+			<p class="muted-copy">Limit diambil dari environment server. Slot di-reserve saat submit dan dikembalikan otomatis jika conversion gagal.</p>
+		</div>
+		<form method="post" action="/app/conversions" enctype="multipart/form-data" class="stack-form convert-form">
 			{{.CSRFField}}
-			<label>Source file
-				<input type="file" name="file" accept=".pdf,.epub,application/pdf,application/epub+zip" required>
-			</label>
-			<label>Convert to
-				<select name="target_format" required>
-					<option value="epub">EPUB</option>
-					<option value="pdf">PDF</option>
-				</select>
-			</label>
-			<p class="muted-copy">Current upload cap: {{.MaxUploadMB}} MB. Runtime worker concurrency stays at 1 for small VPS stability.</p>
-			<button type="submit">Queue conversion</button>
+			<div class="form-grid">
+				<label>Source file
+					<input type="file" name="file" accept=".pdf,.epub,application/pdf,application/epub+zip" required>
+				</label>
+				<label>Convert to
+					<select name="target_format" required>
+						<option value="epub">EPUB</option>
+						<option value="pdf">PDF</option>
+					</select>
+				</label>
+			</div>
+			<div class="convert-form-footer">
+				<p class="muted-copy">Upload cap: {{.MaxUploadMB}} MB. Worker concurrency tetap 1 untuk menjaga VPS kecil tetap stabil.</p>
+				<button type="submit" {{if .Quota.Exhausted}}disabled{{end}}>Queue conversion</button>
+			</div>
 		</form>
 	</div>
-	<div class="panel">
-		<p class="eyebrow">Live queue</p>
+	<div class="panel queue-panel">
+		<div class="panel-header">
+			<div>
+				<p class="eyebrow">Live queue</p>
+				<h2>Riwayat dan hasil convert</h2>
+			</div>
+			<p class="muted-copy panel-meta">Auto refresh setiap 5 detik.</p>
+		</div>
 		<div id="jobs-panel" hx-get="/app/jobs" hx-trigger="load, every 5s" hx-swap="outerHTML">
 			{{template "jobs_panel" .}}
 		</div>
@@ -502,7 +549,21 @@ const dashboardTemplate = `
 
 const jobsTemplate = `
 {{define "jobs_panel"}}
-<div id="jobs-panel">
+<div id="jobs-panel" class="jobs-panel-shell">
+	<div class="jobs-quota-row">
+		<div class="jobs-quota-card">
+			<span class="jobs-quota-label">Active slot</span>
+			<strong>{{.Quota.ActiveCount}} / {{.Quota.Limit}}</strong>
+		</div>
+		<div class="jobs-quota-card">
+			<span class="jobs-quota-label">Remaining</span>
+			<strong>{{.Quota.Remaining}}</strong>
+		</div>
+		<div class="jobs-quota-card">
+			<span class="jobs-quota-label">Completed</span>
+			<strong>{{.Quota.CompletedCount}}</strong>
+		</div>
+	</div>
 	{{if .Jobs}}
 	<table class="jobs-table">
 		<thead>
@@ -512,27 +573,45 @@ const jobsTemplate = `
 				<th>Status</th>
 				<th>Created</th>
 				<th>Finished</th>
+				<th>Action</th>
 			</tr>
 		</thead>
 		<tbody>
 			{{range .Jobs}}
-			<tr>
-				<td>{{.SourceFileName}}</td>
-				<td>{{.TargetFormat}}</td>
-				<td><span class="{{statusClass .Status}}">{{.Status}}</span></td>
+			<tr class="job-row">
+				<td>
+					<div class="job-source">
+						<strong>{{fileStem .SourceFileName}}</strong>
+						<span>{{.SourceFileName}}</span>
+					</div>
+				</td>
+				<td><span class="job-target">{{.TargetFormat}}</span></td>
+				<td><span class="{{statusClass .Status}}">{{statusText .Status}}</span></td>
 				<td>{{formatCreated .CreatedAt}}</td>
 				<td>{{formatTime .FinishedAt}}</td>
+				<td>
+					{{if and (eq .Status "done") .OutputStorageKey}}
+					<a href="{{downloadPath .ID}}" class="button-link jobs-download">Download</a>
+					{{else if eq .Status "failed"}}
+					<span class="jobs-action-muted">Check error</span>
+					{{else}}
+					<span class="jobs-action-muted">Processing</span>
+					{{end}}
+				</td>
 			</tr>
 			{{if .ErrorMessage}}
 			<tr>
-				<td colspan="5" class="job-error">{{.ErrorMessage}}</td>
+				<td colspan="6" class="job-error">{{.ErrorMessage}}</td>
 			</tr>
 			{{end}}
 			{{end}}
 		</tbody>
 	</table>
 	{{else}}
-	<p class="muted-copy">No conversion jobs yet.</p>
+	<div class="empty-state">
+		<h3>Belum ada conversion</h3>
+		<p class="muted-copy">Job yang Anda queue akan muncul di sini lengkap dengan status dan tombol download saat hasil sudah siap.</p>
+	</div>
 	{{end}}
 </div>
 {{end}}

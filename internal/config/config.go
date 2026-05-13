@@ -12,22 +12,23 @@ import (
 )
 
 type Config struct {
-	AppEnv               string
-	AppName              string
-	AppBaseURL           string
-	AppHost              string
-	AppPort              int
-	AppCookieDomain      string
-	AppSecureCookies     bool
-	AppSessionCookieName string
-	AppDataDir           string
-	AppMaxUploadMB       int64
-	AppMaxConcurrentJobs int
-	AppWorkerPoll        time.Duration
-	AppHTTPReadTimeout   time.Duration
-	AppHTTPWriteTimeout  time.Duration
-	AppHTTPIdleTimeout   time.Duration
-	CSRFAuthKey          string
+	AppEnv                  string
+	AppName                 string
+	AppBaseURL              string
+	AppHost                 string
+	AppPort                 int
+	AppCookieDomain         string
+	AppSecureCookies        bool
+	AppSessionCookieName    string
+	AppDataDir              string
+	AppMaxUploadMB          int64
+	AppDailyConversionLimit int
+	AppMaxConcurrentJobs    int
+	AppWorkerPoll           time.Duration
+	AppHTTPReadTimeout      time.Duration
+	AppHTTPWriteTimeout     time.Duration
+	AppHTTPIdleTimeout      time.Duration
+	CSRFAuthKey             string
 
 	SupabaseURL          string
 	SupabaseAnonKey      string
@@ -37,26 +38,27 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		AppEnv:               getEnv("APP_ENV", "development"),
-		AppName:              getEnv("APP_NAME", "File Converter"),
-		AppBaseURL:           strings.TrimRight(getEnv("APP_BASE_URL", "http://localhost:8081"), "/"),
-		AppHost:              getEnv("APP_HOST", "127.0.0.1"),
-		AppPort:              getEnvInt("APP_PORT", 8081),
-		AppCookieDomain:      os.Getenv("APP_COOKIE_DOMAIN"),
-		AppSecureCookies:     getEnvBool("APP_SECURE_COOKIES", false),
-		AppSessionCookieName: getEnv("APP_SESSION_COOKIE_NAME", "fc_session"),
-		AppDataDir:           getEnv("APP_DATA_DIR", "./var/data"),
-		AppMaxUploadMB:       getEnvInt64("APP_MAX_UPLOAD_MB", 25),
-		AppMaxConcurrentJobs: getEnvInt("APP_MAX_CONCURRENT_JOBS", 1),
-		AppWorkerPoll:        getEnvDuration("APP_WORKER_POLL_INTERVAL", 3*time.Second),
-		AppHTTPReadTimeout:   getEnvDuration("APP_HTTP_READ_TIMEOUT", 30*time.Second),
-		AppHTTPWriteTimeout:  getEnvDuration("APP_HTTP_WRITE_TIMEOUT", 300*time.Second),
-		AppHTTPIdleTimeout:   getEnvDuration("APP_HTTP_IDLE_TIMEOUT", 60*time.Second),
-		CSRFAuthKey:          os.Getenv("CSRF_AUTH_KEY"),
-		SupabaseURL:          strings.TrimRight(os.Getenv("SUPABASE_URL"), "/"),
-		SupabaseAnonKey:      os.Getenv("SUPABASE_ANON_KEY"),
-		DatabaseURL:          os.Getenv("DATABASE_URL"),
-		MigrationDatabaseURL: os.Getenv("MIGRATION_DATABASE_URL"),
+		AppEnv:                  getEnv("APP_ENV", "development"),
+		AppName:                 getEnv("APP_NAME", "File Converter"),
+		AppBaseURL:              strings.TrimRight(getEnv("APP_BASE_URL", "http://localhost:8081"), "/"),
+		AppHost:                 getEnv("APP_HOST", "127.0.0.1"),
+		AppPort:                 getEnvInt("APP_PORT", 8081),
+		AppCookieDomain:         os.Getenv("APP_COOKIE_DOMAIN"),
+		AppSecureCookies:        getEnvBool("APP_SECURE_COOKIES", false),
+		AppSessionCookieName:    getEnv("APP_SESSION_COOKIE_NAME", "fc_session"),
+		AppDataDir:              getEnv("APP_DATA_DIR", "./var/data"),
+		AppMaxUploadMB:          getEnvInt64("APP_MAX_UPLOAD_MB", 25),
+		AppDailyConversionLimit: getRequiredEnvInt("APP_DAILY_CONVERSION_LIMIT"),
+		AppMaxConcurrentJobs:    getEnvInt("APP_MAX_CONCURRENT_JOBS", 1),
+		AppWorkerPoll:           getEnvDuration("APP_WORKER_POLL_INTERVAL", 3*time.Second),
+		AppHTTPReadTimeout:      getEnvDuration("APP_HTTP_READ_TIMEOUT", 30*time.Second),
+		AppHTTPWriteTimeout:     getEnvDuration("APP_HTTP_WRITE_TIMEOUT", 300*time.Second),
+		AppHTTPIdleTimeout:      getEnvDuration("APP_HTTP_IDLE_TIMEOUT", 60*time.Second),
+		CSRFAuthKey:             os.Getenv("CSRF_AUTH_KEY"),
+		SupabaseURL:             strings.TrimRight(os.Getenv("SUPABASE_URL"), "/"),
+		SupabaseAnonKey:         os.Getenv("SUPABASE_ANON_KEY"),
+		DatabaseURL:             os.Getenv("DATABASE_URL"),
+		MigrationDatabaseURL:    os.Getenv("MIGRATION_DATABASE_URL"),
 	}
 	return cfg, cfg.Validate()
 }
@@ -84,6 +86,9 @@ func (c Config) Validate() error {
 	}
 	if c.AppMaxUploadMB < 1 {
 		return errors.New("APP_MAX_UPLOAD_MB must be at least 1")
+	}
+	if c.AppDailyConversionLimit < 1 {
+		return errors.New("APP_DAILY_CONVERSION_LIMIT must be at least 1")
 	}
 	if _, err := net.ResolveTCPAddr("tcp", c.ListenAddr()); err != nil {
 		return fmt.Errorf("invalid listen addr: %w", err)
@@ -150,6 +155,18 @@ func getEnvInt(key string, fallback int) int {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return fallback
+	}
+	return parsed
+}
+
+func getRequiredEnvInt(key string) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
 	}
 	return parsed
 }

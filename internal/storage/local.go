@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,8 @@ type Local struct {
 	outputsDir string
 	tmpDir     string
 }
+
+var ErrInvalidStorageKey = errors.New("invalid storage key")
 
 func New(root, uploadsDir, outputsDir, tmpDir string) *Local {
 	return &Local{
@@ -108,4 +111,41 @@ func (l *Local) PrepareOutputPath(targetFormat string) (SavedFile, error) {
 
 func (l *Local) AbsPath(storageKey string) string {
 	return filepath.Join(l.root, filepath.FromSlash(storageKey))
+}
+
+func (l *Local) Open(storageKey string) (*os.File, error) {
+	path, err := l.resolvePath(storageKey)
+	if err != nil {
+		return nil, err
+	}
+	return os.Open(path)
+}
+
+func (l *Local) Remove(storageKey string) error {
+	path, err := l.resolvePath(storageKey)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (l *Local) resolvePath(storageKey string) (string, error) {
+	cleanKey := filepath.Clean(filepath.FromSlash(storageKey))
+	if cleanKey == "." || cleanKey == "" {
+		return "", ErrInvalidStorageKey
+	}
+
+	root := filepath.Clean(l.root)
+	path := filepath.Join(root, cleanKey)
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", ErrInvalidStorageKey
+	}
+	return path, nil
 }

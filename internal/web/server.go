@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,20 +26,35 @@ import (
 	"github.com/alexanderzull/file-converter/internal/config"
 	"github.com/alexanderzull/file-converter/internal/converter"
 	"github.com/alexanderzull/file-converter/internal/db"
+	"github.com/alexanderzull/file-converter/internal/quota"
 	"github.com/alexanderzull/file-converter/internal/storage"
 	"github.com/alexanderzull/file-converter/internal/ui"
 )
 
+type repository interface {
+	Ping(ctx context.Context) error
+	ListJobs(ctx context.Context, userID string, limit int) ([]db.ConversionJob, error)
+	DailyUsageSummary(ctx context.Context, userID string, quotaDate time.Time) (db.DailyUsage, error)
+	CreateQueuedConversion(ctx context.Context, params db.CreateQueuedConversionParams) (db.ConversionJob, error)
+	FetchDownloadableFile(ctx context.Context, userID, jobID string) (db.DownloadableFile, error)
+}
+
+type fileStorage interface {
+	SaveUpload(ctx context.Context, originalName string, source io.Reader) (storage.SavedFile, error)
+	Open(storageKey string) (*os.File, error)
+	Remove(storageKey string) error
+}
+
 type Server struct {
 	cfg       config.Config
 	log       *slog.Logger
-	repo      *db.Repository
+	repo      repository
 	auth      *auth.Client
-	storage   *storage.Local
+	storage   fileStorage
 	converter *converter.Service
 }
 
-func New(cfg config.Config, log *slog.Logger, repo *db.Repository, authClient *auth.Client, storage *storage.Local, converter *converter.Service) *Server {
+func New(cfg config.Config, log *slog.Logger, repo repository, authClient *auth.Client, storage fileStorage, converter *converter.Service) *Server {
 	return &Server{
 		cfg:       cfg,
 		log:       log,
@@ -93,6 +110,7 @@ func (s *Server) Router() http.Handler {
 		protected.Get("/dashboard", s.handleDashboard)
 		protected.Get("/app/jobs", s.handleJobs)
 		protected.Post("/app/conversions", s.handleCreateConversion)
+		protected.Get("/app/conversions/{jobID}/download", s.handleDownloadConversion)
 	})
 
 	return r
@@ -276,22 +294,22 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	user, _ := CurrentUser(r.Context())
-	jobs, err := s.repo.ListJobs(r.Context(), user.ID, 20)
+	jobs, usage, err := s.dashboardData(r.Context(), user.ID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	s.render(w, r, http.StatusOK, ui.Dashboard(s.cfg.AppName, &user, csrf.Token(r), csrf.TemplateField(r), nil, jobs, s.cfg.AppMaxUploadMB))
+	s.render(w, r, http.StatusOK, ui.Dashboard(s.cfg.AppName, &user, csrf.Token(r), csrf.TemplateField(r), nil, jobs, s.cfg.AppMaxUploadMB, usage))
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	user, _ := CurrentUser(r.Context())
-	jobs, err := s.repo.ListJobs(r.Context(), user.ID, 20)
+	jobs, usage, err := s.dashboardData(r.Context(), user.ID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	s.render(w, r, http.StatusOK, ui.JobsPanel(jobs))
+	s.render(w, r, http.StatusOK, ui.JobsPanel(jobs, usage))
 }
 
 func (s *Server) handleCreateConversion(w http.ResponseWriter, r *http.Request) {
@@ -320,31 +338,71 @@ func (s *Server) handleCreateConversion(w http.ResponseWriter, r *http.Request) 
 		s.internalError(w, r, err)
 		return
 	}
-
-	storedFile, err := s.repo.CreateStoredFile(r.Context(), db.CreateStoredFileParams{
+	quotaDate := quota.DateForTime(time.Now())
+	_, err = s.repo.CreateQueuedConversion(r.Context(), db.CreateQueuedConversionParams{
 		UserID:       user.ID,
-		OriginalName: header.Filename,
-		StorageKey:   saved.StorageKey,
-		MimeType:     detectMimeType(header.Filename),
-		SizeBytes:    saved.SizeBytes,
-		ChecksumSHA:  saved.ChecksumSHA,
-	})
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-
-	_, err = s.repo.CreateJob(r.Context(), db.CreateJobParams{
-		UserID:       user.ID,
-		SourceFileID: storedFile.ID,
 		TargetFormat: targetFormat,
+		QuotaDate:    quotaDate,
+		Limit:        s.cfg.AppDailyConversionLimit,
+		SourceFile: db.CreateStoredFileParams{
+			UserID:       user.ID,
+			OriginalName: header.Filename,
+			StorageKey:   saved.StorageKey,
+			MimeType:     detectMimeType(header.Filename),
+			SizeBytes:    saved.SizeBytes,
+			ChecksumSHA:  saved.ChecksumSHA,
+		},
 	})
 	if err != nil {
+		_ = s.storage.Remove(saved.StorageKey)
+		if errors.Is(err, db.ErrDailyLimitReached) {
+			s.renderDashboardError(w, r, user, "daily conversion quota reached for today")
+			return
+		}
 		s.internalError(w, r, err)
 		return
 	}
 
 	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+}
+
+func (s *Server) handleDownloadConversion(w http.ResponseWriter, r *http.Request) {
+	user, _ := CurrentUser(r.Context())
+	jobID := chi.URLParam(r, "jobID")
+	file, err := s.repo.FetchDownloadableFile(r.Context(), user.ID, jobID)
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrDownloadNotFound):
+			http.NotFound(w, r)
+		case errors.Is(err, db.ErrJobNotReady):
+			http.Error(w, "conversion output is not ready", http.StatusConflict)
+		default:
+			s.internalError(w, r, err)
+		}
+		return
+	}
+
+	handle, err := s.storage.Open(file.StorageKey)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		s.internalError(w, r, err)
+		return
+	}
+	defer handle.Close()
+
+	info, err := handle.Stat()
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	filename := buildDownloadFilename(file.SourceName, file.TargetFormat)
+	w.Header().Set("Content-Type", file.MimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	http.ServeContent(w, r, filename, info.ModTime(), handle)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -432,12 +490,12 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error
 }
 
 func (s *Server) renderDashboardError(w http.ResponseWriter, r *http.Request, user auth.User, message string) {
-	jobs, err := s.repo.ListJobs(r.Context(), user.ID, 20)
+	jobs, usage, err := s.dashboardData(r.Context(), user.ID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	s.render(w, r, http.StatusBadRequest, ui.Dashboard(s.cfg.AppName, &user, csrf.Token(r), csrf.TemplateField(r), &ui.Flash{Kind: "error", Message: message}, jobs, s.cfg.AppMaxUploadMB))
+	s.render(w, r, http.StatusBadRequest, ui.Dashboard(s.cfg.AppName, &user, csrf.Token(r), csrf.TemplateField(r), &ui.Flash{Kind: "error", Message: message}, jobs, s.cfg.AppMaxUploadMB, usage))
 }
 
 func (s *Server) writeJSONError(w http.ResponseWriter, status int, message string) {
@@ -485,6 +543,58 @@ func detectMimeType(filename string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+func (s *Server) dashboardData(ctx context.Context, userID string) ([]db.ConversionJob, quota.Summary, error) {
+	jobs, err := s.repo.ListJobs(ctx, userID, 20)
+	if err != nil {
+		return nil, quota.Summary{}, err
+	}
+
+	usage, err := s.repo.DailyUsageSummary(ctx, userID, quota.DateForTime(time.Now()))
+	if err != nil {
+		return nil, quota.Summary{}, err
+	}
+
+	return jobs, quota.Summary{
+		Limit:          s.cfg.AppDailyConversionLimit,
+		ReservedCount:  usage.ReservedCount,
+		CompletedCount: usage.CompletedCount,
+	}, nil
+}
+
+func buildDownloadFilename(sourceName, targetFormat string) string {
+	base := strings.TrimSuffix(filepath.Base(sourceName), filepath.Ext(sourceName))
+	base = sanitizeFilename(base)
+	if base == "" {
+		base = "converted-file"
+	}
+	target := strings.TrimPrefix(strings.ToLower(targetFormat), ".")
+	if target == "" {
+		target = "bin"
+	}
+	return base + "." + target
+}
+
+func sanitizeFilename(value string) string {
+	replacer := strings.NewReplacer("/", "-", "\\", "-", "\x00", "", "\n", " ", "\r", " ", "\"", "", "'", "")
+	safe := strings.TrimSpace(replacer.Replace(value))
+	safe = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case strings.ContainsRune(" ._-()", r):
+			return r
+		default:
+			return '-'
+		}
+	}, safe)
+	safe = strings.Trim(safe, ". -_")
+	return safe
 }
 
 func optionalUser(user auth.User, ok bool) *auth.User {

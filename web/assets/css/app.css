@@ -268,6 +268,14 @@ select {
   border-radius: 12px;
   padding: 12px 14px;
   background: rgba(255, 255, 255, 0.9);
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+input:focus,
+select:focus {
+  outline: 0;
+  border-color: rgba(15, 106, 71, 0.6);
+  box-shadow: 0 0 0 4px rgba(15, 106, 71, 0.1);
 }
 
 button,
@@ -291,6 +299,13 @@ button:hover,
   transform: translateY(-1px);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  background: #90a596;
+  color: rgba(255, 255, 255, 0.92);
+  transform: none;
+}
+
 .text-link,
 .muted-links a {
   color: var(--accent-strong);
@@ -312,7 +327,99 @@ button:hover,
 }
 
 .dashboard-grid {
-  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 470px) minmax(0, 1fr);
+}
+
+.convert-panel,
+.queue-panel,
+.quota-summary,
+.jobs-panel-shell,
+.job-source {
+  display: grid;
+}
+
+.convert-panel,
+.queue-panel {
+  gap: 20px;
+}
+
+.panel-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+
+.panel-header h1,
+.panel-header h2,
+.compact-lede,
+.panel-meta {
+  margin: 0;
+}
+
+.quota-chip {
+  display: inline-grid;
+  gap: 4px;
+  padding: 12px 16px;
+  border: 1px solid rgba(15, 106, 71, 0.16);
+  border-radius: 18px;
+  background: rgba(15, 106, 71, 0.08);
+  justify-items: end;
+}
+
+.quota-chip strong {
+  font-size: 1.15rem;
+}
+
+.quota-chip-label,
+.quota-label,
+.jobs-quota-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.quota-chip-danger,
+.quota-summary-danger {
+  border-color: rgba(139, 47, 47, 0.16);
+  background: rgba(139, 47, 47, 0.08);
+}
+
+.quota-summary {
+  gap: 8px;
+  padding: 18px 20px;
+  border: 1px solid rgba(216, 205, 189, 0.88);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 250, 242, 0.78)),
+    radial-gradient(circle at top left, rgba(15, 106, 71, 0.08), transparent 48%);
+}
+
+.quota-summary h2 {
+  margin: 0;
+  font-size: 1.55rem;
+}
+
+.convert-form,
+.jobs-panel-shell {
+  gap: 18px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.convert-form-footer {
+  display: grid;
+  gap: 14px;
+  align-items: center;
+}
+
+.convert-form-footer .muted-copy {
+  margin: 0;
 }
 
 .flash {
@@ -337,6 +444,14 @@ button:hover,
 .jobs-table {
   width: 100%;
   border-collapse: collapse;
+  border-spacing: 0;
+}
+
+.jobs-table thead th {
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .jobs-table th,
@@ -345,6 +460,30 @@ button:hover,
   border-bottom: 1px solid var(--line);
   text-align: left;
   vertical-align: top;
+}
+
+.job-row td {
+  background: rgba(255, 255, 255, 0.36);
+}
+
+.job-source {
+  gap: 4px;
+}
+
+.job-source span {
+  color: var(--muted);
+  font-size: 0.92rem;
+  word-break: break-word;
+}
+
+.job-target {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(15, 106, 71, 0.08);
+  color: var(--accent-strong);
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .status {
@@ -379,6 +518,51 @@ button:hover,
 .job-error {
   color: var(--danger);
   font-size: 0.92rem;
+  background: rgba(245, 221, 221, 0.55);
+}
+
+.jobs-download {
+  padding: 10px 14px;
+  font-size: 0.92rem;
+}
+
+.jobs-action-muted {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.jobs-quota-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.jobs-quota-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(216, 205, 189, 0.82);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.jobs-quota-card strong {
+  font-size: 1.1rem;
+}
+
+.empty-state {
+  display: grid;
+  gap: 8px;
+  padding: 28px 20px;
+  border: 1px dashed rgba(216, 205, 189, 0.92);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+
+.empty-state h3,
+.empty-state p {
+  margin: 0;
 }
 
 .callback-panel {
@@ -422,6 +606,11 @@ button:hover,
     padding: 22px;
   }
 
+  .panel-header,
+  .jobs-quota-row {
+    grid-template-columns: 1fr;
+  }
+
   .landing-page {
     gap: 24px;
   }
@@ -437,6 +626,15 @@ button:hover,
 
   .actions .button-link,
   .actions .hero-secondary-link {
+    width: 100%;
+  }
+
+  .convert-form-footer {
+    justify-items: stretch;
+  }
+
+  .jobs-download,
+  .convert-form-footer button {
     width: 100%;
   }
 }

@@ -12,12 +12,14 @@ Native Go scaffold for a small-VPS PDF/EPUB converter that sits behind host-leve
 - `goose` migrations
 - Local file storage under `/srv/file-converter/data`
 - In-process worker with concurrency `1`
+- Daily per-user conversion quota driven by `APP_DAILY_CONVERSION_LIMIT`
 - `ebook-convert` from Calibre for `pdf <-> epub`
 - Production deploy via `systemd` plus host `Nginx`
 
 ## Quick start
 
 1. Copy `.env.example` to `.env` and fill in Supabase values.
+   Set `APP_DAILY_CONVERSION_LIMIT` explicitly; startup fails if it is missing or below `1`.
 2. Run `go mod tidy`.
 3. Run `make migrate-up`.
 4. Ensure `ebook-convert` is installed locally.
@@ -40,6 +42,7 @@ Native Go scaffold for a small-VPS PDF/EPUB converter that sits behind host-leve
 - Env file: `/etc/file-converter.env`
 - Nginx site template: `deploy/nginx/file-converter.conf`
 - systemd unit: `deploy/systemd/file-converter.service`
+- Example env values: `deploy/env/file-converter.env.example`
 
 ## Notes
 
