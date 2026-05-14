@@ -192,25 +192,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, payload any, b
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
-
-	data, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-	if res.StatusCode >= 200 && res.StatusCode < 300 {
-		return data, nil
-	}
-
-	var apiErr apiError
-	if err := json.Unmarshal(data, &apiErr); err == nil && (apiErr.ErrorDescription != "" || apiErr.Message != "" || apiErr.ErrorCode != "") {
-		return nil, apiErr
-	}
-
-	if res.StatusCode == http.StatusUnauthorized {
-		return nil, errors.New("unauthorized")
-	}
-	return nil, fmt.Errorf("supabase auth: %s", strings.TrimSpace(string(data)))
+	return readAPIResponse(res, true)
 }
 
 func (c *Client) doForm(ctx context.Context, method, path string, form url.Values) ([]byte, error) {
@@ -226,6 +208,10 @@ func (c *Client) doForm(ctx context.Context, method, path string, form url.Value
 	if err != nil {
 		return nil, err
 	}
+	return readAPIResponse(res, false)
+}
+
+func readAPIResponse(res *http.Response, mapUnauthorized bool) ([]byte, error) {
 	defer res.Body.Close()
 
 	data, err := io.ReadAll(res.Body)
@@ -238,6 +224,9 @@ func (c *Client) doForm(ctx context.Context, method, path string, form url.Value
 	var apiErr apiError
 	if err := json.Unmarshal(data, &apiErr); err == nil && (apiErr.ErrorDescription != "" || apiErr.Message != "" || apiErr.ErrorCode != "") {
 		return nil, apiErr
+	}
+	if mapUnauthorized && res.StatusCode == http.StatusUnauthorized {
+		return nil, errors.New("unauthorized")
 	}
 	return nil, fmt.Errorf("supabase auth: %s", strings.TrimSpace(string(data)))
 }

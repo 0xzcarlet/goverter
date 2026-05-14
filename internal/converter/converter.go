@@ -13,6 +13,15 @@ type Service struct {
 	execName string
 }
 
+const (
+	FormatPDF  = "pdf"
+	FormatEPUB = "epub"
+
+	MIMEPDF                    = "application/pdf"
+	MIMEEPUB                   = "application/epub+zip"
+	MIMEApplicationOctetStream = "application/octet-stream"
+)
+
 func New(execName string) *Service {
 	if execName == "" {
 		execName = "ebook-convert"
@@ -48,9 +57,9 @@ func ValidatePair(inputPath, targetFormat string) error {
 	target := strings.TrimPrefix(strings.ToLower(targetFormat), ".")
 
 	switch {
-	case source == "pdf" && target == "epub":
+	case source == FormatPDF && target == FormatEPUB:
 		return nil
-	case source == "epub" && target == "pdf":
+	case source == FormatEPUB && target == FormatPDF:
 		return nil
 	case source == "":
 		return errors.New("source format is missing")
@@ -63,11 +72,11 @@ func ValidatePair(inputPath, targetFormat string) error {
 
 func MIMEByFormat(format string) string {
 	switch strings.TrimPrefix(strings.ToLower(format), ".") {
-	case "pdf":
-		return "application/pdf"
-	case "epub":
-		return "application/epub+zip"
+	case FormatPDF:
+		return MIMEPDF
+	case FormatEPUB:
+		return MIMEEPUB
 	default:
-		return "application/octet-stream"
+		return MIMEApplicationOctetStream
 	}
 }

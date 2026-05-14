@@ -8,7 +8,6 @@ import (
 
 	"github.com/a-h/templ"
 	"github.com/alexanderzull/file-converter/internal/auth"
-	"github.com/alexanderzull/file-converter/internal/db"
 	"github.com/alexanderzull/file-converter/internal/quota"
 )
 
@@ -40,7 +39,7 @@ func TestDashboardShowsDownloadActionForCompletedJobs(t *testing.T) {
 		"csrf-token",
 		"",
 		nil,
-		[]db.ConversionJob{{
+		[]Job{{
 			ID:               "job-1",
 			Status:           "done",
 			TargetFormat:     "epub",
