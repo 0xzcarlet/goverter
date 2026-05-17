@@ -1,4 +1,4 @@
-# file-converter
+# Goverter
 
 Lightweight Go web app for converting **PDF to EPUB** and **EPUB to PDF** from the browser. It uses Supabase for authentication and PostgreSQL, stores files locally, and processes conversions with a small in-process worker powered by Calibre's `ebook-convert`.
 
