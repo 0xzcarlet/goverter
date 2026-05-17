@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/alexanderzull/file-converter/internal/auth"
 	"github.com/alexanderzull/file-converter/internal/config"
+	"github.com/alexanderzull/file-converter/internal/converter"
 	"github.com/alexanderzull/file-converter/internal/db"
 	"github.com/alexanderzull/file-converter/internal/storage"
 )
@@ -31,7 +33,7 @@ func TestHandleDownloadConversionReturnsFileForOwner(t *testing.T) {
 	srv := &Server{
 		cfg: config.Config{AppDailyConversionLimit: 3},
 		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		repo: fakeRepository{
+		repo: &fakeRepository{
 			downloadFile: db.DownloadableFile{
 				StorageKey:   "outputs/result.epub",
 				MimeType:     "application/epub+zip",
@@ -69,7 +71,7 @@ func TestHandleDownloadConversionRejectsNonReadyJob(t *testing.T) {
 	srv := &Server{
 		cfg:  config.Config{AppDailyConversionLimit: 3},
 		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		repo: fakeRepository{downloadErr: db.ErrJobNotReady},
+		repo: &fakeRepository{downloadErr: db.ErrJobNotReady},
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/app/conversions/job-1/download", nil)
@@ -88,7 +90,7 @@ func TestHandleDownloadConversionReturnsNotFoundForMissingFile(t *testing.T) {
 	srv := &Server{
 		cfg: config.Config{AppDailyConversionLimit: 3},
 		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		repo: fakeRepository{
+		repo: &fakeRepository{
 			downloadFile: db.DownloadableFile{
 				StorageKey:   "outputs/missing.epub",
 				MimeType:     "application/epub+zip",
@@ -118,9 +120,190 @@ func TestBuildDownloadFilenameSanitizesSourceName(t *testing.T) {
 	}
 }
 
+func TestHandleGuestConversionReturnsConvertedFile(t *testing.T) {
+	rootDir := t.TempDir()
+	fileStorage := storage.New(rootDir, filepath.Join(rootDir, "uploads"), filepath.Join(rootDir, "outputs"), filepath.Join(rootDir, "tmp"))
+	if err := fileStorage.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+
+	repo := &fakeRepository{}
+	srv := &Server{
+		cfg: config.Config{
+			AppSessionCookieName:    "fc_session",
+			AppDailyConversionLimit: 3,
+			AppMaxUploadMB:          25,
+		},
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:      repo,
+		storage:   fileStorage,
+		converter: newTestConverter(t, "#!/bin/sh\ncp \"$1\" \"$2\"\n"),
+	}
+
+	req := newGuestConversionRequest(t, "book.pdf", "epub", "fake pdf payload")
+	rr := httptest.NewRecorder()
+
+	srv.handleGuestConversion(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if got := rr.Header().Get("Content-Type"); got != converter.MIMEEPUB {
+		t.Fatalf("Content-Type = %q, want %q", got, converter.MIMEEPUB)
+	}
+	if got := rr.Header().Get("Content-Disposition"); !strings.Contains(got, `filename="book.epub"`) {
+		t.Fatalf("Content-Disposition = %q", got)
+	}
+	if body := rr.Body.String(); body != "fake pdf payload" {
+		t.Fatalf("body = %q, want %q", body, "fake pdf payload")
+	}
+	if repo.reserveGuestCalls != 1 {
+		t.Fatalf("reserveGuestCalls = %d, want 1", repo.reserveGuestCalls)
+	}
+	if repo.completeGuestCalls != 1 {
+		t.Fatalf("completeGuestCalls = %d, want 1", repo.completeGuestCalls)
+	}
+	if repo.refundGuestCalls != 0 {
+		t.Fatalf("refundGuestCalls = %d, want 0", repo.refundGuestCalls)
+	}
+	if len(rr.Result().Cookies()) == 0 {
+		t.Fatal("expected guest cookie to be set")
+	}
+	assertNoFilesInDir(t, filepath.Join(rootDir, "uploads"))
+	assertNoFilesInDir(t, filepath.Join(rootDir, "outputs"))
+}
+
+func TestHandleGuestConversionReturnsQuotaErrorWhenDailyLimitReached(t *testing.T) {
+	srv := &Server{
+		cfg: config.Config{
+			AppSessionCookieName:    "fc_session",
+			AppDailyConversionLimit: 3,
+			AppMaxUploadMB:          25,
+		},
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo: &fakeRepository{
+			guestSummary:    db.GuestDailyUsage{CompletedCount: 1},
+			reserveGuestErr: db.ErrDailyLimitReached,
+		},
+		storage:   fakeFileStorage{},
+		converter: newTestConverter(t, "#!/bin/sh\ncp \"$1\" \"$2\"\n"),
+	}
+
+	req := newGuestConversionRequest(t, "book.pdf", "epub", "fake pdf payload")
+	rr := httptest.NewRecorder()
+
+	srv.handleGuestConversion(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusTooManyRequests)
+	}
+	if !strings.Contains(rr.Body.String(), "Jatah guest untuk hari ini sudah habis") {
+		t.Fatalf("body = %q, want daily limit message", rr.Body.String())
+	}
+}
+
+func TestHandleGuestConversionRejectsInvalidPairWithoutReservingQuota(t *testing.T) {
+	repo := &fakeRepository{}
+	srv := &Server{
+		cfg: config.Config{
+			AppSessionCookieName:    "fc_session",
+			AppDailyConversionLimit: 3,
+			AppMaxUploadMB:          25,
+		},
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:      repo,
+		storage:   fakeFileStorage{},
+		converter: newTestConverter(t, "#!/bin/sh\ncp \"$1\" \"$2\"\n"),
+	}
+
+	req := newGuestConversionRequest(t, "book.pdf", "pdf", "fake pdf payload")
+	rr := httptest.NewRecorder()
+
+	srv.handleGuestConversion(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	if repo.reserveGuestCalls != 0 {
+		t.Fatalf("reserveGuestCalls = %d, want 0", repo.reserveGuestCalls)
+	}
+}
+
+func TestHandleGuestConversionRefundsQuotaOnConverterFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	fileStorage := storage.New(rootDir, filepath.Join(rootDir, "uploads"), filepath.Join(rootDir, "outputs"), filepath.Join(rootDir, "tmp"))
+	if err := fileStorage.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+
+	repo := &fakeRepository{}
+	srv := &Server{
+		cfg: config.Config{
+			AppSessionCookieName:    "fc_session",
+			AppDailyConversionLimit: 3,
+			AppMaxUploadMB:          25,
+		},
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo:      repo,
+		storage:   fileStorage,
+		converter: newTestConverter(t, "#!/bin/sh\necho boom >&2\nexit 1\n"),
+	}
+
+	req := newGuestConversionRequest(t, "book.pdf", "epub", "fake pdf payload")
+	rr := httptest.NewRecorder()
+
+	srv.handleGuestConversion(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	}
+	if repo.refundGuestCalls != 1 {
+		t.Fatalf("refundGuestCalls = %d, want 1", repo.refundGuestCalls)
+	}
+	if !strings.Contains(rr.Body.String(), "Konversi gagal diproses") {
+		t.Fatalf("body = %q, want conversion failure message", rr.Body.String())
+	}
+}
+
+func TestHandleLandingShowsDashboardCTAForLoggedInUser(t *testing.T) {
+	srv := &Server{
+		cfg: config.Config{
+			AppName:              "File Converter",
+			AppSessionCookieName: "fc_session",
+			AppMaxUploadMB:       25,
+		},
+		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		repo: &fakeRepository{},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(withUser(req.Context(), auth.User{ID: "user-1"}))
+	rr := httptest.NewRecorder()
+
+	srv.handleLanding(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if strings.Contains(rr.Body.String(), `action="/guest/conversions"`) {
+		t.Fatalf("landing should not show guest form for logged-in user: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `href="/dashboard"`) {
+		t.Fatalf("landing missing dashboard link: %s", rr.Body.String())
+	}
+}
+
 type fakeRepository struct {
 	downloadFile db.DownloadableFile
 	downloadErr  error
+	guestSummary db.GuestDailyUsage
+
+	reserveGuestErr error
+	guestSummaryErr error
+
+	reserveGuestCalls  int
+	completeGuestCalls int
+	refundGuestCalls   int
 }
 
 func (f fakeRepository) Ping(context.Context) error { return nil }
@@ -153,6 +336,14 @@ func (f fakeFileStorage) SaveUpload(context.Context, string, io.Reader) (storage
 	return storage.SavedFile{}, nil
 }
 
+func (f fakeFileStorage) PrepareOutputPath(string) (storage.SavedFile, error) {
+	return storage.SavedFile{}, nil
+}
+
+func (f fakeFileStorage) AbsPath(string) string {
+	return ""
+}
+
 func (f fakeFileStorage) Open(storageKey string) (*os.File, error) {
 	if f.openErr != nil {
 		return nil, f.openErr
@@ -166,8 +357,77 @@ func (f fakeFileStorage) Open(storageKey string) (*os.File, error) {
 
 func (f fakeFileStorage) Remove(string) error { return nil }
 
+func (f *fakeRepository) GuestDailyUsageSummary(context.Context, string, time.Time) (db.GuestDailyUsage, error) {
+	if f.guestSummaryErr != nil {
+		return db.GuestDailyUsage{}, f.guestSummaryErr
+	}
+	return f.guestSummary, nil
+}
+
+func (f *fakeRepository) ReserveGuestDailySlot(context.Context, string, time.Time, int) error {
+	f.reserveGuestCalls++
+	return f.reserveGuestErr
+}
+
+func (f *fakeRepository) CompleteGuestDailySlot(context.Context, string, time.Time) error {
+	f.completeGuestCalls++
+	return nil
+}
+
+func (f *fakeRepository) RefundGuestDailySlot(context.Context, string, time.Time) error {
+	f.refundGuestCalls++
+	return nil
+}
+
 func withRouteParam(r *http.Request, key, value string) *http.Request {
 	routeCtx := chi.NewRouteContext()
 	routeCtx.URLParams.Add(key, value)
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, routeCtx))
+}
+
+func newGuestConversionRequest(t *testing.T, filename, targetFormat, contents string) *http.Request {
+	t.Helper()
+
+	body := &strings.Builder{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("CreateFormFile() error = %v", err)
+	}
+	if _, err := io.WriteString(part, contents); err != nil {
+		t.Fatalf("WriteString() error = %v", err)
+	}
+	if err := writer.WriteField("target_format", targetFormat); err != nil {
+		t.Fatalf("WriteField() error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/guest/conversions", strings.NewReader(body.String()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
+}
+
+func newTestConverter(t *testing.T, script string) *converter.Service {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ebook-convert")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return converter.New(path)
+}
+
+func assertNoFilesInDir(t *testing.T, dir string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v", dir, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("dir %q still has %d entries", dir, len(entries))
+	}
 }

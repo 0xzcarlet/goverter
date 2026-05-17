@@ -6,7 +6,11 @@ LOAD_ENV = if [ -f "$(ENV_FILE)" ]; then set -a; . "$(ENV_FILE)"; set +a; fi;
 .PHONY: dev build test migrate-up migrate-down smoke clean
 
 dev:
-	@$(LOAD_ENV) go run ./cmd/web
+	@$(LOAD_ENV) env=$${APP_ENV:-development}; \
+	if [ "$$env" = "development" ]; then \
+		go run ./cmd/migrate up || exit $$?; \
+	fi; \
+	go run ./cmd/web
 
 build:
 	mkdir -p $(BUILD_DIR)

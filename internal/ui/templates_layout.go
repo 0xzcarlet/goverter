@@ -23,6 +23,9 @@ const baseTemplate = `
 					<button class="ghost-button" type="submit">Logout</button>
 				</form>
 				{{else}}
+				<a href="/#landing-details">Konversi</a>
+				<a href="/#format-support">Format</a>
+				<a href="/#guest-member">Guest vs Login</a>
 				<a href="/login">Login</a>
 				<a href="/register" class="button-link">Create Account</a>
 				{{end}}

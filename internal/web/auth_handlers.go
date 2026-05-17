@@ -15,7 +15,12 @@ import (
 )
 
 func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
-	component := ui.Landing(s.cfg.AppName, s.optionalCurrentUser(r.Context()))
+	user := s.landingCurrentUser(w, r)
+	component, err := s.landingComponent(w, r, user, nil)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	s.render(w, r, http.StatusOK, component)
 }
 

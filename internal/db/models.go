@@ -29,6 +29,13 @@ type DailyUsage struct {
 	CompletedCount int
 }
 
+type GuestDailyUsage struct {
+	GuestToken     string
+	QuotaDate      time.Time
+	ReservedCount  int
+	CompletedCount int
+}
+
 type ConversionJob struct {
 	ID               string
 	UserID           string

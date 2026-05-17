@@ -23,12 +23,18 @@ type repository interface {
 	Ping(ctx context.Context) error
 	ListJobs(ctx context.Context, userID string, limit int) ([]db.ConversionJob, error)
 	DailyUsageSummary(ctx context.Context, userID string, quotaDate time.Time) (db.DailyUsage, error)
+	GuestDailyUsageSummary(ctx context.Context, guestToken string, quotaDate time.Time) (db.GuestDailyUsage, error)
+	ReserveGuestDailySlot(ctx context.Context, guestToken string, quotaDate time.Time, limit int) error
+	CompleteGuestDailySlot(ctx context.Context, guestToken string, quotaDate time.Time) error
+	RefundGuestDailySlot(ctx context.Context, guestToken string, quotaDate time.Time) error
 	CreateQueuedConversion(ctx context.Context, params db.CreateQueuedConversionParams) (db.ConversionJob, error)
 	FetchDownloadableFile(ctx context.Context, userID, jobID string) (db.DownloadableFile, error)
 }
 
 type fileStorage interface {
 	SaveUpload(ctx context.Context, originalName string, source io.Reader) (storage.SavedFile, error)
+	PrepareOutputPath(targetFormat string) (storage.SavedFile, error)
+	AbsPath(storageKey string) string
 	Open(storageKey string) (*os.File, error)
 	Remove(storageKey string) error
 }
@@ -78,6 +84,7 @@ func (s *Server) Router() http.Handler {
 	r.Group(func(public chi.Router) {
 		public.Use(csrfMiddleware)
 		public.Get("/", s.handleLanding)
+		public.Post("/guest/conversions", s.handleGuestConversion)
 		public.Get("/login", s.handleLoginForm)
 		public.Post("/login", s.handleLogin)
 		public.Get("/register", s.handleRegisterForm)

@@ -66,6 +66,9 @@ Start the development server:
 make dev
 ```
 
+In `development`, `make dev` first applies pending migrations and then starts the web server.
+If `MIGRATION_DATABASE_URL` is unreachable, the migration tool falls back to `DATABASE_URL`.
+
 Open:
 
 ```text
@@ -98,6 +101,7 @@ Important fields:
 - `SUPABASE_ANON_KEY`: Supabase anon or publishable key.
 - `DATABASE_URL`: PostgreSQL connection string for the app runtime.
 - `MIGRATION_DATABASE_URL`: PostgreSQL connection string for migrations. If empty, `DATABASE_URL` is used.
+- In some Supabase setups, the direct `db.<project-ref>.supabase.co` host may be unreachable from local networks that do not have working IPv6 routing. In that case, the app falls back to `DATABASE_URL` for migrations during local development.
 
 Example development `.env`:
 
@@ -159,7 +163,7 @@ In the Supabase dashboard:
 make dev
 ```
 
-Run the local web server from `cmd/web`.
+Apply pending migrations in `development`, then run the local web server from `cmd/web`.
 
 ```bash
 make test

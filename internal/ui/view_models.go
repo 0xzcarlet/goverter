@@ -38,6 +38,20 @@ type layoutData struct {
 	Body        template.HTML
 }
 
+const (
+	LandingHeroModeGuest  = "guest"
+	LandingHeroModeMember = "member"
+)
+
+type LandingView struct {
+	Flash       *Flash
+	CSRFField   template.HTML
+	CurrentUser *auth.User
+	GuestQuota  quota.Summary
+	HeroMode    string
+	MaxUploadMB int64
+}
+
 type authView struct {
 	Flash     *Flash
 	CSRFField template.HTML

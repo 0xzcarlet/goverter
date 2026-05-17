@@ -23,12 +23,13 @@ var templates = template.Must(template.New("base").Funcs(templateFuncs()).Parse(
 		jobsTemplate,
 ))
 
-func Landing(appName string, currentUser *auth.User) templ.Component {
+func Landing(appName, csrfToken string, view LandingView) templ.Component {
 	return renderPage("landing", layoutData{
 		Title:       appName,
 		AppName:     appName,
-		CurrentUser: currentUser,
-	})
+		CurrentUser: view.CurrentUser,
+		CSRFToken:   csrfToken,
+	}, view)
 }
 
 func Login(appName, csrfToken string, csrfField template.HTML, flash *Flash, email string) templ.Component {
